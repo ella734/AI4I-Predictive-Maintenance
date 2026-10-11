@@ -27,7 +27,7 @@ st.set_page_config(
 )
 
 BASE_DIR = Path(__file__).resolve().parent
-API_URL = "http://127.0.0.1:8001"
+API_URL = "https://ai4i-predictive-maintenance-n4be.onrender.com"
 
 FEATURES = [
     "Type",
