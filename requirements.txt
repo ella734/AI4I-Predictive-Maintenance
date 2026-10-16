@@ -12,3 +12,6 @@ ucimlrepo
 pydantic
 pytest
 httpx
+shap
+lime
+matplotlib

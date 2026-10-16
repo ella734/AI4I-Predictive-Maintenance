@@ -5,6 +5,9 @@ import plotly.express as px
 import plotly.graph_objects as go
 import joblib
 import requests
+import os
+import matplotlib.pyplot as plt
+from explainability import shap_global, shap_local, lime_local
 
 from pathlib import Path
 from ucimlrepo import fetch_ucirepo
@@ -27,7 +30,11 @@ st.set_page_config(
 )
 
 BASE_DIR = Path(__file__).resolve().parent
-API_URL = "https://ai4i-predictive-maintenance-n4be.onrender.com"
+API_URL = os.getenv("API_URL", "https://ai4i-predictive-maintenance-n4be.onrender.com").rstrip("/")
+try:
+    API_URL = st.secrets.get("API_URL", API_URL).rstrip("/")
+except (FileNotFoundError, KeyError):
+    pass
 
 FEATURES = [
     "Type",
@@ -74,7 +81,7 @@ def check_api():
     try:
         response = requests.get(
             f"{API_URL}/health",
-            timeout=5
+            timeout=60
         )
         response.raise_for_status()
         return response.json()
@@ -86,7 +93,7 @@ def predict_with_api(machine_data):
     response = requests.post(
         f"{API_URL}/predict",
         json=machine_data,
-        timeout=15
+        timeout=90
     )
     response.raise_for_status()
     return response.json()
@@ -115,7 +122,8 @@ page = st.sidebar.radio(
         "Prétraitement",
         "Comparaison des modèles",
         "Évaluation avancée",
-        "Prédiction"
+        "Prédiction",
+        "Explainable AI"
     ]
 )
 
@@ -552,8 +560,8 @@ elif page == "Prédiction":
             )
         else:
             st.error(
-                "Impossible de joindre FastAPI. "
-                "Vérifie que le serveur fonctionne sur le port 8001."
+                "Impossible de joindre l’API FastAPI hébergée sur Render. "
+                "Vérifie son adresse et attends son éventuel redémarrage."
             )
 
     st.divider()
@@ -672,8 +680,8 @@ elif page == "Prédiction":
 
         except requests.exceptions.ConnectionError:
             st.error(
-                "Connexion impossible avec FastAPI. "
-                "Démarre le serveur sur le port 8001."
+                "Connexion impossible avec l’API FastAPI sur Render. "
+                "Vérifie son URL ou réessaie dans une minute."
             )
 
         except requests.exceptions.Timeout:
@@ -690,3 +698,107 @@ elif page == "Prédiction":
             st.error(
                 f"Réponse inattendue de l'API : {error}"
             )
+
+
+elif page == "Explainable AI":
+    st.title("Module 5 — Explainable AI (SHAP et LIME)")
+    st.write(
+        "Ce module explique les prédictions du modèle XGBoost. "
+        "SHAP fournit une interprétation globale et locale, tandis que "
+        "LIME approxime localement la décision du modèle."
+    )
+    st.info(
+        "Les explications décrivent le comportement du modèle, "
+        "et non les causes physiques certaines d'une panne."
+    )
+
+    try:
+        pipeline = load_model("XGBoost")
+        # Le jeu d'entraînement sert de référence à LIME ;
+        # le jeu de test est réservé aux observations expliquées.
+        X_reference = X_train.sample(n=min(500, len(X_train)), random_state=42)
+        X_explain = X_test.reset_index(drop=True)
+
+        tab_global, tab_shap, tab_lime = st.tabs(
+            ["SHAP global", "SHAP local", "LIME local"]
+        )
+
+        with tab_global:
+            st.subheader("Importance globale des variables")
+            st.write(
+                "Le graphique représente la moyenne des valeurs absolues SHAP "
+                "sur un échantillon du jeu de test."
+            )
+            sample_size = st.slider(
+                "Nombre d'observations à analyser",
+                min_value=20,
+                max_value=min(200, len(X_explain)),
+                value=min(100, len(X_explain)),
+                step=10,
+                key="shap_sample"
+            )
+            if st.button("Calculer SHAP global"):
+                with st.spinner("Calcul des contributions SHAP..."):
+                    sample = X_explain.sample(n=sample_size, random_state=42)
+                    fig, _ = shap_global(pipeline, sample)
+                    st.pyplot(fig)
+                    plt.close(fig)
+                st.caption(
+                    "Les variables Type_H, Type_L et Type_M correspondent "
+                    "aux trois indicateurs issus du One-Hot Encoding de Type."
+                )
+
+        with tab_shap:
+            st.subheader("Expliquer une observation avec SHAP")
+            index = st.number_input(
+                "Indice de l'observation dans le jeu de test",
+                min_value=0,
+                max_value=len(X_explain) - 1,
+                value=0,
+                step=1,
+                key="shap_index"
+            )
+            observation = X_explain.iloc[[int(index)]]
+            st.dataframe(observation, width="stretch")
+            probability = float(pipeline.predict_proba(observation)[0, 1])
+            st.metric("Probabilité de panne estimée", f"{probability * 100:.2f} %")
+            if st.button("Expliquer avec SHAP"):
+                with st.spinner("Calcul de l'explication locale..."):
+                    fig = shap_local(pipeline, observation)
+                    st.pyplot(fig)
+                    plt.close(fig)
+                st.caption(
+                    "Pour XGBoost, les contributions SHAP affichées sont "
+                    "sur l'échelle du score brut (log-odds), "
+                    "pas directement en points de pourcentage."
+                )
+
+        with tab_lime:
+            st.subheader("Expliquer une observation avec LIME")
+            index_lime = st.number_input(
+                "Indice de l'observation dans le jeu de test",
+                min_value=0,
+                max_value=len(X_explain) - 1,
+                value=0,
+                step=1,
+                key="lime_index"
+            )
+            observation_lime = X_explain.iloc[[int(index_lime)]]
+            st.dataframe(observation_lime, width="stretch")
+            probability_lime = float(pipeline.predict_proba(observation_lime)[0, 1])
+            st.metric("Probabilité de panne estimée", f"{probability_lime * 100:.2f} %")
+            if st.button("Expliquer avec LIME"):
+                with st.spinner("Construction de l'explication locale LIME..."):
+                    fig = lime_local(pipeline, X_reference, observation_lime)
+                    st.pyplot(fig)
+                    plt.close(fig)
+                st.caption(
+                    "LIME construit un modèle interprétable autour de cette observation. "
+                    "Les poids locaux ne sont pas des probabilités."
+                )
+
+    except FileNotFoundError:
+        st.error("Le fichier models/xgboost.joblib est introuvable.")
+    except Exception as error:
+        st.error(f"Erreur lors du calcul des explications : {error}")
+        st.exception(error)
